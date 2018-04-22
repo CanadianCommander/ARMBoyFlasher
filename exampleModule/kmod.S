@@ -13,7 +13,7 @@ __binary_layout:
 	.long	__data_end__
   .long __bss_start__
   .long __bss_end__
-
+  .long 0x400       /* HEAP SIZE */
   .size __binary_layout, . - __binary_layout
 
   .section .jump_vector
@@ -22,7 +22,7 @@ __binary_layout:
 __jump_vector:
 
 	/* jump vectors. replace Default_Handler with you handler as required*/
-  .long Default_Handler // 0
+  .long moduleInit      // 0
   .long Default_Handler
   .long Default_Handler
   .long Default_Handler
@@ -97,5 +97,5 @@ Default_Handler:
 
   .section .module_name
 __module_name:
-  padded_string "kernel module test", 60 @ module name
+  padded_string "example module", 60 @ module name
   .long 0x00000001 @ module ID

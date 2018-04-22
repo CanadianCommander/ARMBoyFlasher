@@ -8,7 +8,6 @@ void foobar(){
 }
 
 void moduleInit(void * arg){
-  foobar();
   printf("foobar! %d %d\n", data, dataMk2);
   data ++;
   dataMk2++;

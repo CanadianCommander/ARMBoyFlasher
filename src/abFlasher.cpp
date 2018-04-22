@@ -9,15 +9,23 @@
 #include <cmath>
 #include <algorithm>
 
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <errno.h>
+#include <cstdio>
+
 void printUsage();
-int uploadKernelModule(std::string name, uint32_t id, uint32_t hSize, std::fstream& binFile, std::fstream& serialPort);
+int uploadKernelModule(std::fstream& binFile, FILE * serialPort);
 
 int main(int argc, char ** argv){
   std::regex isOption ("-.*");
   UploadMode uMode = UploadMode::KERNEL_MODULE;
   int argIndex = 1;
 
-  if(argc < 5){
+  if(argc < 3){
     std::cout << "insuficent arguments\n";
     printUsage();
     return 1;
@@ -38,24 +46,7 @@ int main(int argc, char ** argv){
     argIndex++;
   }
 
-  std::string progName(argv[argIndex]);
-  argIndex++;
-
-  if(progName.length() > NAME_SIZE_LIMIT){
-    std::cout << "program name to long! max 60 characters\n";
-    printUsage();
-    return 1;
-  }
-
-  uint32_t progId = 0;
-  std::stringstream(argv[argIndex]) >> progId;
-  argIndex++;
-
-  uint32_t heapSize = 0;
-  std::stringstream(argv[argIndex]) >> heapSize;
-  argIndex++;
-
-  std::fstream binaryFile(argv[argIndex], std::fstream::in);
+  std::fstream binaryFile(argv[argIndex], std::fstream::in | std::fstream::binary);
   if(binaryFile.fail()){
     std::cout << "cant find binary file: " <<  argv[argIndex] << "\n";
     printUsage();
@@ -63,69 +54,80 @@ int main(int argc, char ** argv){
   }
   argIndex ++;
 
-  std::fstream serialPort(argv[argIndex]);
-  if(serialPort.fail()){
-    std::cout << "cannot open port: " << argv[argIndex] << "\n";
+  // some lower level IO is required for serial port
+  int serialFd = open(argv[argIndex],  O_RDWR | O_NOCTTY | O_SYNC);
+  FILE * serialPort = fdopen(serialFd, "r+");
+  if(errno != 0){
+    std::cout << "Could not open serial port " << argv[argIndex] << "\n";
     printUsage();
     return 1;
   }
 
+  int res = 0;
   switch(uMode){
     case UploadMode::KERNEL_MODULE:
-      return uploadKernelModule(progName,progId,heapSize,binaryFile,serialPort);
+      res = uploadKernelModule(binaryFile,serialPort);
+      close(serialFd);
+      break;
     case UploadMode::USER_PROGRAM:
 
       break;
     default:
       printUsage();
-      return 1;
+      res = 1;
   }
 
-  return 0;
+  return res;
 }
 
 
 void printUsage(){
-  std::cout << "usage: abFlasher [-k|-u] <program name> <program id> <heap size bytes> <.bin file> <serial port>\n";
+  std::cout << "usage: abFlasher [-k|-u] <.bin file> <serial port>\n";
 }
 
-void generateModuleHeader(char * hBuffer, std::string name, uint32_t id, uint32_t hSize, std::fstream& binFile);
-int uploadKernelModule(std::string name, uint32_t id, uint32_t hSize, std::fstream& binFile, std::fstream& serialPort){
+int uploadKernelModule(std::fstream& binFile, FILE * serialPort){
 
   binFile.seekg(0, std::fstream::end);
   uint fileLen = binFile.tellg();
   binFile.seekg(0, std::fstream::beg);
-  uint pages = ceil((float)fileLen / (float)ARMBOY_PAGE_SIZE) + 1; // + 1 because of header page
+  uint pages = ceil((float)fileLen / (float)ARMBOY_PAGE_SIZE);
 
-  std::string greating = "";
-  serialPort >> greating;
-  if(greating != "===ARMBoy==="){
-    std::cout << "unknown serial device on serial port\n";
+  char * inputLine;
+  size_t lineLen = 0;
+  getline(&inputLine,&lineLen,serialPort);
+  if(std::string(inputLine) != "===ARMBoy===\n"){
+    std::cout << "unknown serial device on serial port!\n";
     return 1;
   }
+  free(inputLine);
+  inputLine = NULL;
+  lineLen = 0;
 
-  serialPort << "upload " << pages;
+  //instruct the MCU to start upload process
+  char messageBuff[256];
+  sprintf(messageBuff,"upload %d\n", pages);
+  fwrite(messageBuff, strlen(messageBuff), 1, serialPort);
+  getline(&inputLine,&lineLen,serialPort);
 
-  std::string response = "";
-  serialPort >> response;
-
+  std::cout << "upload start\n";
   char uploadBuffer[UPLOAD_CHUNK_SIZE];
-  generateModuleHeader(uploadBuffer, name, id, hSize, binFile);
-  for(int i =0; i < ARMBOY_PAGE_SIZE/UPLOAD_CHUNK_SIZE; i ++){
-
-  }
-
   // upload binary
-  while(response == "next"){
+  while(std::string(inputLine) == "next\n"){
+    std::cout << ".";
     binFile.read(uploadBuffer,UPLOAD_CHUNK_SIZE);
-    serialPort.write(uploadBuffer,UPLOAD_CHUNK_SIZE);
-    serialPort << "\n";
-    serialPort >> response;
+
+    fwrite(uploadBuffer,UPLOAD_CHUNK_SIZE,1,serialPort);
+
+    free(inputLine);
+    inputLine = NULL;
+    lineLen = 0;
+    getline(&inputLine,&lineLen,serialPort);
+    std::cout << inputLine;
   }
 
+  if(inputLine != NULL){
+    free(inputLine);
+  }
+  std::cout << "\nJob Done!\n";
   return 0;
-}
-
-void generateModuleHeader(char * hBuffer, std::string name, uint32_t id, uint32_t hSize, std::fstream& binFile){
-  memcpy(hBuffer, name.c_str(), std::min(60UL,name.length()));
 }
