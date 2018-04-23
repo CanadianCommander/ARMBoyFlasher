@@ -80,6 +80,23 @@ int main(int argc, char ** argv){
   return res;
 }
 
+const uint32_t CSUM_BUFFER_SIZE = 256;
+uint32_t calcChecksum(std::fstream& binFile){
+  uint32_t checksum = 0;
+  char buffer[CSUM_BUFFER_SIZE];
+  memset(buffer,0,CSUM_BUFFER_SIZE);
+  binFile.read(buffer,CSUM_BUFFER_SIZE);
+  while(binFile.gcount() != 0){
+    for(int i =0; i < CSUM_BUFFER_SIZE/4; i++){
+      checksum = checksum + *((uint32_t*)buffer + i);
+    }
+
+    memset(buffer,0,CSUM_BUFFER_SIZE);
+    binFile.read(buffer,CSUM_BUFFER_SIZE);
+  }
+
+  return checksum;
+}
 
 void printUsage(){
   std::cout << "usage: abFlasher [-k|-u] <.bin file> <serial port>\n";
@@ -91,6 +108,10 @@ int uploadKernelModule(std::fstream& binFile, FILE * serialPort){
   uint fileLen = binFile.tellg();
   binFile.seekg(0, std::fstream::beg);
   uint pages = ceil((float)fileLen / (float)ARMBOY_PAGE_SIZE);
+
+  uint32_t checksum = calcChecksum(binFile);
+  binFile.clear();
+  binFile.seekg(0, std::fstream::beg);
 
   char * inputLine;
   size_t lineLen = 0;
@@ -105,15 +126,17 @@ int uploadKernelModule(std::fstream& binFile, FILE * serialPort){
 
   //instruct the MCU to start upload process
   char messageBuff[256];
-  sprintf(messageBuff,"upload %d\n", pages);
+  sprintf(messageBuff,"upload %d %u\n", pages, checksum);
   fwrite(messageBuff, strlen(messageBuff), 1, serialPort);
   getline(&inputLine,&lineLen,serialPort);
 
-  std::cout << "upload start\n";
+  std::cout << "upload start w/ checksum: " << std::hex << checksum << "\nuploading";
   char uploadBuffer[UPLOAD_CHUNK_SIZE];
   // upload binary
   while(std::string(inputLine) == "next\n"){
     std::cout << ".";
+
+    memset(uploadBuffer, 0, UPLOAD_CHUNK_SIZE);
     binFile.read(uploadBuffer,UPLOAD_CHUNK_SIZE);
 
     fwrite(uploadBuffer,UPLOAD_CHUNK_SIZE,1,serialPort);
@@ -122,12 +145,11 @@ int uploadKernelModule(std::fstream& binFile, FILE * serialPort){
     inputLine = NULL;
     lineLen = 0;
     getline(&inputLine,&lineLen,serialPort);
-    std::cout << inputLine;
   }
+  std::cout << inputLine;
 
   if(inputLine != NULL){
     free(inputLine);
   }
-  std::cout << "\nJob Done!\n";
   return 0;
 }
