@@ -48,6 +48,20 @@ SECTIONS
 	} > FLASH
 	__exidx_end = .;
 
+  .got.plt :
+  {
+    __got_plt_start__ = .;
+    *(.got.plt)
+    __got_plt_end__ = .;
+  } > FLASH
+
+  .got :
+  {
+    __got_start__ = .;
+    *(.got)
+    __got_end__ = .;
+  } > FLASH
+
 	.data :
 	{
 		__data_start__ = .;
@@ -90,17 +104,4 @@ SECTIONS
 		__bss_end__ = .;
 	} > FLASH
 
-  .got :
-  {
-    __got_start__ = .;
-    *(.got)
-    __got_end__ = .;
-  } > FLASH
-
-  .got.plt :
-  {
-    __got_plt_start__ = .;
-    *(.got.plt)
-    __got_plt_end__ = .;
-  } > FLASH
 }
