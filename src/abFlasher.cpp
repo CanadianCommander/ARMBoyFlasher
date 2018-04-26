@@ -17,8 +17,14 @@
 #include <errno.h>
 #include <cstdio>
 
+/****************************************
+  quick N dirty flash tool for the ARMBoy tm.
+  can flash firmware (kernel modules) and user software.
+*****************************************/
+
 void printUsage();
 int uploadKernelModule(std::fstream& binFile, FILE * serialPort);
+int uploadUserProgram(std::fstream& binFile, FILE * serialPort, uint32_t heapSize, uint32_t stackSize);
 
 int main(int argc, char ** argv){
   std::regex isOption ("-.*");
@@ -46,6 +52,15 @@ int main(int argc, char ** argv){
     argIndex++;
   }
 
+  uint heapSize = 0;
+  uint stackSize = 0;
+  if(uMode == UploadMode::USER_PROGRAM){
+    sscanf(argv[argIndex], "%u", &heapSize);
+    argIndex ++;
+    sscanf(argv[argIndex], "%u", &stackSize);
+    argIndex ++;
+  }
+
   std::fstream binaryFile(argv[argIndex], std::fstream::in | std::fstream::binary);
   if(binaryFile.fail()){
     std::cout << "cant find binary file: " <<  argv[argIndex] << "\n";
@@ -70,7 +85,8 @@ int main(int argc, char ** argv){
       close(serialFd);
       break;
     case UploadMode::USER_PROGRAM:
-
+      res = uploadUserProgram(binaryFile,serialPort, heapSize, stackSize);
+      close(serialFd);
       break;
     default:
       printUsage();
@@ -98,8 +114,20 @@ uint32_t calcChecksum(std::fstream& binFile){
   return checksum;
 }
 
+bool checkDeviceOnPort(FILE * serialPort){
+  char * inputLine;
+  size_t lineLen = 0;
+  getline(&inputLine,&lineLen,serialPort);
+  if(std::string(inputLine) != "===ARMBoy===\n"){
+    return false;
+  }
+  free(inputLine);
+  return true;
+}
+
 void printUsage(){
-  std::cout << "usage: abFlasher [-k|-u] <.bin file> <serial port>\n";
+  std::cout << "usage: abFlasher -k <.bin file> <serial port>\n"
+            << "usage: abFlasher -u <heapSize> <stackSize> <.bin file> <serialPort>";
 }
 
 int uploadKernelModule(std::fstream& binFile, FILE * serialPort){
@@ -113,16 +141,13 @@ int uploadKernelModule(std::fstream& binFile, FILE * serialPort){
   binFile.clear();
   binFile.seekg(0, std::fstream::beg);
 
-  char * inputLine;
-  size_t lineLen = 0;
-  getline(&inputLine,&lineLen,serialPort);
-  if(std::string(inputLine) != "===ARMBoy===\n"){
-    std::cout << "unknown serial device on serial port!\n";
+  if(!checkDeviceOnPort(serialPort)){
+    std::cout << "unknown device on serial port! \n";
     return 1;
   }
-  free(inputLine);
-  inputLine = NULL;
-  lineLen = 0;
+
+  char * inputLine;
+  size_t lineLen = 0;
 
   //instruct the MCU to start upload process
   char messageBuff[256];
@@ -140,6 +165,54 @@ int uploadKernelModule(std::fstream& binFile, FILE * serialPort){
     binFile.read(uploadBuffer,UPLOAD_CHUNK_SIZE);
 
     fwrite(uploadBuffer,UPLOAD_CHUNK_SIZE,1,serialPort);
+
+    free(inputLine);
+    inputLine = NULL;
+    lineLen = 0;
+    getline(&inputLine,&lineLen,serialPort);
+  }
+  std::cout << inputLine;
+
+  if(inputLine != NULL){
+    free(inputLine);
+  }
+  return 0;
+}
+
+int uploadUserProgram(std::fstream& binFile, FILE * serialPort, uint32_t heapSize, uint32_t stackSize){
+  binFile.seekg(0, std::fstream::end);
+  uint fileLen = binFile.tellg();
+  binFile.seekg(0, std::fstream::beg);
+  uint chunks = ceil((float)fileLen / (float)UPLOAD_CHUNK_SIZE);
+
+  uint32_t checksum = calcChecksum(binFile);
+  binFile.clear();
+  binFile.seekg(0, std::fstream::beg);
+
+  if(!checkDeviceOnPort(serialPort)){
+    std::cout << "unknown device on serial port! \n";
+    return 1;
+  }
+
+  //instruct the MCU to start upload process
+  char messageBuff[256];
+  sprintf(messageBuff,"u_upload %d %d %d %u\n", chunks*64, heapSize, stackSize, checksum);
+  fwrite(messageBuff, strlen(messageBuff), 1, serialPort);
+
+  char * inputLine;
+  size_t lineLen = 0;
+  getline(&inputLine,&lineLen,serialPort);
+
+  std::cout << "upload start w/ checksum: " << std::hex << checksum << "\nuploading";
+  char buffer[UPLOAD_CHUNK_SIZE];
+
+  while(std::string(inputLine) == "next\n"){
+    std::cout << ".";
+
+    memset(buffer, 0, UPLOAD_CHUNK_SIZE);
+    binFile.read(buffer,UPLOAD_CHUNK_SIZE);
+
+    fwrite(buffer,UPLOAD_CHUNK_SIZE,1,serialPort);
 
     free(inputLine);
     inputLine = NULL;
