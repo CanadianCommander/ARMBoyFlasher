@@ -8,6 +8,7 @@
 #include <string>
 #include <cmath>
 #include <algorithm>
+#include <thread>
 
 #include <unistd.h>
 #include <sys/types.h>
@@ -22,6 +23,7 @@
   can flash firmware (kernel modules) and user software.
 *****************************************/
 
+size_t getSerialLine(char ** line, size_t * len, FILE * port);
 void printUsage();
 int uploadKernelModule(std::fstream& binFile, FILE * serialPort);
 int uploadUserProgram(std::fstream& binFile, FILE * serialPort, uint32_t heapSize, uint32_t stackSize);
@@ -117,8 +119,9 @@ uint32_t calcChecksum(std::fstream& binFile){
 bool checkDeviceOnPort(FILE * serialPort){
   char * inputLine;
   size_t lineLen = 0;
-  getline(&inputLine,&lineLen,serialPort);
+  getSerialLine(&inputLine,&lineLen,serialPort);
   if(std::string(inputLine) != "===ARMBoy===\n"){
+    std::cout << "ERROR: expecting \"===ARMBoy===\" but got: " << inputLine << " \n";
     return false;
   }
   free(inputLine);
@@ -146,14 +149,14 @@ int uploadKernelModule(std::fstream& binFile, FILE * serialPort){
     return 1;
   }
 
-  char * inputLine;
+  char * inputLine = NULL;
   size_t lineLen = 0;
 
   //instruct the MCU to start upload process
   char messageBuff[256];
   sprintf(messageBuff,"upload %d %u\n", pages, checksum);
-  fwrite(messageBuff, strlen(messageBuff), 1, serialPort);
-  getline(&inputLine,&lineLen,serialPort);
+  fwrite(messageBuff, 1, strlen(messageBuff), serialPort);
+  getSerialLine(&inputLine,&lineLen,serialPort);
 
   std::cout << "upload start w/ checksum: " << std::hex << checksum << "\nuploading";
   char uploadBuffer[UPLOAD_CHUNK_SIZE];
@@ -163,13 +166,20 @@ int uploadKernelModule(std::fstream& binFile, FILE * serialPort){
 
     memset(uploadBuffer, 0, UPLOAD_CHUNK_SIZE);
     binFile.read(uploadBuffer,UPLOAD_CHUNK_SIZE);
+    uint32_t bytesLeft = UPLOAD_CHUNK_SIZE;
 
-    fwrite(uploadBuffer,UPLOAD_CHUNK_SIZE,1,serialPort);
+    while(bytesLeft > 0){
+       bytesLeft -= fwrite(uploadBuffer + (UPLOAD_CHUNK_SIZE - bytesLeft),1,bytesLeft,serialPort);
+       if(errno){
+         std::cout << "WRITE ERROR: " << errno << "\n";
+         break;
+       }
+    }
 
     free(inputLine);
     inputLine = NULL;
     lineLen = 0;
-    getline(&inputLine,&lineLen,serialPort);
+    getSerialLine(&inputLine,&lineLen,serialPort);
   }
   std::cout << inputLine;
 
@@ -197,32 +207,76 @@ int uploadUserProgram(std::fstream& binFile, FILE * serialPort, uint32_t heapSiz
   //instruct the MCU to start upload process
   char messageBuff[256];
   sprintf(messageBuff,"u_upload %d %d %d %u\n", chunks*64, heapSize, stackSize, checksum);
-  fwrite(messageBuff, strlen(messageBuff), 1, serialPort);
+  fwrite(messageBuff, 1, strlen(messageBuff), serialPort);
 
-  char * inputLine;
+  char * inputLine = NULL;
   size_t lineLen = 0;
-  getline(&inputLine,&lineLen,serialPort);
+  getSerialLine(&inputLine,&lineLen,serialPort);
 
   std::cout << "upload start w/ checksum: " << std::hex << checksum << "\nuploading";
   char buffer[UPLOAD_CHUNK_SIZE];
 
   while(std::string(inputLine) == "next\n"){
-    std::cout << ".";
+    std::cout << "." << std::flush;
+
 
     memset(buffer, 0, UPLOAD_CHUNK_SIZE);
     binFile.read(buffer,UPLOAD_CHUNK_SIZE);
-
-    fwrite(buffer,UPLOAD_CHUNK_SIZE,1,serialPort);
+    uint32_t bytesLeft = UPLOAD_CHUNK_SIZE;
+    while(bytesLeft > 0){
+       bytesLeft -= fwrite(buffer + (UPLOAD_CHUNK_SIZE - bytesLeft),1,bytesLeft,serialPort);
+       if(errno){
+         std::cout << "WRITE ERROR: " << errno << "\n";
+         break;
+       }
+    }
 
     free(inputLine);
     inputLine = NULL;
     lineLen = 0;
-    getline(&inputLine,&lineLen,serialPort);
+    getSerialLine(&inputLine,&lineLen,serialPort);
   }
-  std::cout << inputLine;
+  std::cout << inputLine << "\n";
 
   if(inputLine != NULL){
     free(inputLine);
   }
   return 0;
+}
+
+size_t getSerialLine(char ** line, size_t * len, FILE * port){
+  #ifdef __APPLE__
+    return getline(line,len,port);
+  #elif  __linux__
+    *line = (char *)malloc(SERIAL_INIT_LINE_LEN);
+    *len = 0;
+    uint32_t currInsertPoint = 0;
+    uint32_t currlineLen = SERIAL_INIT_LINE_LEN;
+    size_t getlineRes = 0;
+
+    for(int i =0; i < SERIAL_TIMEOUT; i ++){
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      char * linePtr = NULL;
+      size_t foobar = 0;// <-- getline ignores this but you cannot pass in NULL. so FOOBAR!
+      getlineRes = getline(&linePtr, &foobar, port);
+
+      if(getlineRes != -1){
+        size_t lineLen = strlen(linePtr);
+
+        if(currInsertPoint + lineLen >= currlineLen){
+          currlineLen += SERIAL_INIT_LINE_LEN + lineLen;
+          *line = (char*)realloc(*line, currlineLen);
+        }
+
+        memcpy(*line + (currInsertPoint), linePtr, lineLen);
+        currInsertPoint += lineLen;
+
+        if(strstr(*line,"\n")){
+          break;
+        }
+      }
+    }
+
+    return getlineRes;
+  #endif
 }
