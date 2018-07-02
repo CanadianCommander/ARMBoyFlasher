@@ -133,6 +133,13 @@ void printUsage(){
             << "usage: abFlasher -u <heapSize> <stackSize> <.bin file> <serialPort>";
 }
 
+#define BIN_FILE_HEADER_SIZE  40
+uint32_t getBssSize(std::fstream& binFile){
+  char buff[BIN_FILE_HEADER_SIZE];
+  binFile.read(buff, BIN_FILE_HEADER_SIZE);
+  return *(uint32_t*)(buff + 28) - *(uint32_t*)(buff + 24);
+}
+
 int uploadKernelModule(std::fstream& binFile, FILE * serialPort){
 
   binFile.seekg(0, std::fstream::end);
@@ -193,7 +200,10 @@ int uploadUserProgram(std::fstream& binFile, FILE * serialPort, uint32_t heapSiz
   binFile.seekg(0, std::fstream::end);
   uint fileLen = binFile.tellg();
   binFile.seekg(0, std::fstream::beg);
+  uint bssSize = getBssSize(binFile);
+  binFile.seekg(0, std::fstream::beg);
   uint chunks = ceil((float)fileLen / (float)UPLOAD_CHUNK_SIZE);
+
 
   uint32_t checksum = calcChecksum(binFile);
   binFile.clear();
@@ -203,10 +213,11 @@ int uploadUserProgram(std::fstream& binFile, FILE * serialPort, uint32_t heapSiz
     std::cout << "unknown device on serial port! \n";
     return 1;
   }
+  std::cout << "BSS Size: " << bssSize << "\n";
 
   //instruct the MCU to start upload process
   char messageBuff[256];
-  sprintf(messageBuff,"u_upload %d %d %d %u\n", chunks*64, heapSize, stackSize, checksum);
+  sprintf(messageBuff,"u_upload %d %d %d %d %u\n", chunks*64, heapSize, stackSize, bssSize, checksum);
   fwrite(messageBuff, 1, strlen(messageBuff), serialPort);
 
   char * inputLine = NULL;
